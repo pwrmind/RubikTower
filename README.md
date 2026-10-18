@@ -1,47 +1,40 @@
+# 🗼 Rubik's Tower Game
 
-🗼 Rubik's Tower Game
+**Rubik's Tower** — это минималистичная 2D-головоломка, созданная с использованием библиотеки **Three.js**. Игра переосмысляет классическую 3D-геометрию кубика Рубика, разворачивая её в вертикальную башню из граней на одном плоском экране.
 
-Rubik's Tower is an innovative 2D puzzle game built with Three.js that transforms the classic 3D geometry of a Rubik's Cube into a linear vertical tower. The project is named Mudra and uses the ultra-fast uv package manager for its development workflow.
-By displaying 6 interconnected clones of a single Rubik's Cube stacked on top of each other, the game allows players to interact with a 3D system using simple 2D linear gestures.
+За счёт синхронизации 6 клонов одного куба, игрок может решать полноценную 3D-задачу с помощью простых и привычных двумерных свайпов.
 
-🕹️ Core Game Mechanics
+---
 
-Instead of rotating a heavy 3D camera or handling complex circular gestures, the player interacts with a seamless 2D layout:
-• The Stack: Six 3 × 3 faces are stacked vertically (ROOF, FRONT, FLOOR, BACK, LEFT, RIGHT). Each section represents a different perspective of a single underlying cube state.
-• 4-Way Swipes: Players execute simple vertical or horizontal swipes (LEFT, RIGHT, UP, DOWN) directly on any visible square.
-• Symmetric Rotations: Moving a row or column on one face triggers instant, physically accurate 3D updates across all other visible clones. Face-turning operations (clockwise/counterclockwise) happen automatically as a mathematical consequence of horizontal or vertical actions applied elsewhere on the tower.
+## 🕹️ Игровая механика
 
-🛠️ Tech Stack & Key Features
+Вместо сложного вращения 3D-камеры или круговых жестов пальцем, управление адаптировано под плоские экраны мобильных устройств и ПК:
+* **Вертикальная лента:** На экране друг над другом расположены 6 граней (`ROOF`, `FRONT`, `FLOOR`, `BACK`, `LEFT`, `RIGHT`), каждая из которых показывает отдельную сторону одного и того же кубика.
+* **Линейные свайпы:** Игрок двигает ряды и столбцы строго в 4 направлениях (`Влево`, `Вправо`, `Вверх`, `Вниз`).
+* **Зависимые вращения:** Поворот слоя на одной грани мгновенно и физически корректно отображается на всех остальных. Вращение плоскости по/против часовой стрелки на торцевых гранях происходит автоматически как логическое следствие движений игрока в других секциях башни.
 
-• Three.js Core: Utilizes an orthographic camera (THREE.OrthographicCamera) to eliminate perspective distortion, translating true 3D matrices into clean, scalable, pixel-perfect 2D vector layouts.
-• Manhattan Distance Metric: Progress is evaluated using a true 3D spatial heuristic. Instead of just tracking face stickers, the game measures the Manhattan distance of all 27 sub-cubes from their origin coordinates. This ensures a reliable progress bar that tracks structural clarity without misleading the player.
-• State Preservation (Save System): Leverages browser localStorage along with 3D quaternions (THREE.Quaternion) to encode spatial geometry into stable text formatting. Progress is safely stored after every turn and reloaded upon page refresh.
-• Atomic Animation Engine: Leverages a THREE.Group dynamic pivot system to handle multi-axis operations. While an animation is executing, an automated queue acts as an input firewall to prevent geometric desynchronization.
+---
 
-🚀 Getting Started
+## 🛠️ Технологии и особенности реализации
 
+* **Рендеринг через Three.js:** Использование ортогональной камеры (`THREE.OrthographicCamera`) полностью убирает перспективу и искажения, превращая 3D-модели в аккуратные, идеально ровные 2D-квадраты.
+* **Честная метрика прогресса (Манхэттенское расстояние):** Вместо поверхностного подсчета совпадения цветов на фасаде, игра вычисляет реальное расстояние каждой из 27 деталей до её исходного «дома» в 3D-пространстве. Это гарантирует честную шкалу прогресса, которая не падает от правильных промежуточных ходов.
+* **Автосохранение:** Состояние башни кодируется через 3D-кватернионы (`THREE.Quaternion`) и автоматически записывается в `localStorage` браузера после каждого хода. Игра продолжится с того же места даже после обновления страницы (F5).
+* **Очередь анимаций:** Перемещение элементов во временные анимационные группы (`THREE.Group`) с блокировкой ввода на время движения защищает геометрию от багов и разрывов при быстрых кликах.
 
-Prerequisites
+---
 
-Make sure you have Python and uv installed on your system.
+## 🚀 Быстрый старт
 
-Installation & Running Locally
+Проект полностью автономен и не требует сборщиков или установки тяжелых библиотек.
 
-1. Clone the repository:bash
-git clone https://github.com
-cd rubiks-tower
-Use code with caution.
-2. Run the local development server:
-Since the codebase fits within a lightweight, self-contained index.html structure, you can launch a local server instantly using Python's built-in engine powered by uv:bash
-uv run python -m http.server 8000
-Use code with caution.
-3. Play the game:
-Open your browser and navigate to http://localhost:8000.
+1. Скачайте или скопируйте файл `index.html`.
+2. Запустите его в любом современном браузере (напрямую или через любой локальный веб-сервер, например `Live Server` в VS Code).
 
-📂 Project Structure
+---
 
-text
-├── index.html       # Self-contained game client (HTML5, CSS layout, and Three.js logic)
-└── README.md        # Documentation
-Use code with caution.
-Would you like to include an Installation section for hosting this project directly on GitHub Pages, or should we expand the README with specific instructions for the game design rules?
+## 📂 Структура проекта
+
+```text
+├── index.html       # Весь клиент игры (HTML-разметка, CSS-стили и логика Three.js)
+└── README.md        # Документация проекта
