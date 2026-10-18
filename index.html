@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Рубик-Башня 2x3</title>
+<title>Рубик 2D Матрицы</title>
 <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
@@ -96,7 +96,7 @@
     <div id="progress-value">100%</div>
 </div>
 
-<div id="hint">6 квадратов — это один кубик.<br>Тяните слой, чтобы вращать.</div>
+<div id="hint">Свайпайте по граням, чтобы вращать слои.</div>
 
 <div id="controls">
     <button class="btn accent" id="btn-scramble">Перемешать</button>
@@ -110,39 +110,41 @@
     /* ============================================================
        CONFIG
     ============================================================ */
-    const SAVE_KEY             = 'rubiks_grid_v6';
-    const MAX_MANHATTAN        = 60;
-    const ANIM_DURATION_MS     = 240;
-    const SCRAMBLE_DURATION_MS = 120;
+    const SAVE_KEY             = 'rubiks_2d_v9';
     const SCRAMBLE_MOVES       = 16;
     const DRAG_COMMIT_PX       = 12;
-    
-    // Чувствительность будет пересчитываться в resize()
-    let DRAG_PX_PER_90       = 150; 
+    let DRAG_PX_PER_90         = 150; 
 
-    const FACE_COLORS = [0x1e6fdb, 0x24a148, 0xf0f0f0, 0xf2c419, 0xd32f2f, 0xef7d1a];
-
-    // Раскладка 2 колонки х 3 ряда
-    const CUBE_GAP = 4.2; 
-    const ORIENTATIONS = [
-        // Ряд 1
-        { name: 'ROOF',  rx:  Math.PI / 2, ry: 0,           px: -CUBE_GAP/2, py:  CUBE_GAP },
-        { name: 'FRONT', rx:  0,           ry: 0,           px:  CUBE_GAP/2, py:  CUBE_GAP },
-        // Ряд 2
-        { name: 'FLOOR', rx: -Math.PI / 2, ry: 0,           px: -CUBE_GAP/2, py:  0        },
-        { name: 'BACK',  rx:  0,           ry: Math.PI,     px:  CUBE_GAP/2, py:  0        },
-        // Ряд 3
-        { name: 'LEFT',  rx:  0,           ry: Math.PI / 2, px: -CUBE_GAP/2, py: -CUBE_GAP },
-        { name: 'RIGHT', rx:  0,           ry: -Math.PI / 2,px:  CUBE_GAP/2, py: -CUBE_GAP }
+    const COLORS = [
+        0x1e6fdb, // 0: R (синий)
+        0x24a148, // 1: L (зеленый)
+        0xf0f0f0, // 2: U (белый)
+        0xf2c419, // 3: D (желтый)
+        0xd32f2f, // 4: F (красный)
+        0xef7d1a  // 5: B (оранжевый)
     ];
 
+    // Индексы граней
+    const U = 0, D = 1, F = 2, B = 3, L = 4, R = 5;
+
+    // Исходные матрицы (все собраны)
+    const initialFaces = [
+        [[2,2,2],[2,2,2],[2,2,2]], // U
+        [[3,3,3],[3,3,3],[3,3,3]], // D
+        [[4,4,4],[4,4,4],[4,4,4]], // F
+        [[5,5,5],[5,5,5],[5,5,5]], // B
+        [[1,1,1],[1,1,1],[1,1,1]], // L
+        [[0,0,0],[0,0,0],[0,0,0]]  // R
+    ];
+
+    let faces = JSON.parse(JSON.stringify(initialFaces));
+
     /* ============================================================
-       SCENE
+       SCENE (2D представление)
     ============================================================ */
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
 
-    // Ортогональная камера (границы настроятся в resize)
     const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 1000);
     camera.position.set(0, 0, 50);
     camera.lookAt(0, 0, 0);
@@ -152,90 +154,351 @@
     renderer.setClearColor(0x000000, 0);
     container.appendChild(renderer.domElement);
 
-    // Свет
-    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.55);
-    keyLight.position.set(5, 8, 15);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    keyLight.position.set(0, 0, 15);
     scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0x99bbff, 0.25);
-    fillLight.position.set(-8, -5, 10);
-    scene.add(fillLight);
+
+    // Расположение 6 граней на экране (2 колонки, 3 ряда)
+    const CUBE_GAP = 4.0;
+    const FACE_POSITIONS = [
+        { x: -CUBE_GAP/2, y:  CUBE_GAP }, // U
+        { x: -CUBE_GAP/2, y:  0        }, // D
+        { x:  CUBE_GAP/2, y:  CUBE_GAP }, // F
+        { x:  CUBE_GAP/2, y:  0        }, // B
+        { x: -CUBE_GAP/2, y: -CUBE_GAP }, // L
+        { x:  CUBE_GAP/2, y: -CUBE_GAP }  // R
+    ];
+
+    const pieceGeo = new THREE.BoxGeometry(0.92, 0.92, 0.1);
+    const meshes = []; // 6 граней x 9 ячеек = 54 меша
+
+    // Создаем 54 меша для отрисовки
+    for (let f = 0; f < 6; f++) {
+        meshes[f] = [];
+        for (let r = 0; r < 3; r++) {
+            meshes[f][r] = [];
+            for (let c = 0; c < 3; c++) {
+                const mat = new THREE.MeshStandardMaterial({ color: COLORS[faces[f][r][c]], roughness: 0.4 });
+                const mesh = new THREE.Mesh(pieceGeo, mat);
+                
+                // Позиция ячейки внутри грани
+                const localX = (c - 1) * 1.0;
+                const localY = (1 - r) * 1.0;
+                
+                mesh.position.set(
+                    FACE_POSITIONS[f].x + localX,
+                    FACE_POSITIONS[f].y + localY,
+                    0
+                );
+                
+                mesh.userData = { face: f, row: r, col: c };
+                scene.add(mesh);
+                meshes[f][r][c] = mesh;
+            }
+        }
+    }
 
     /* ============================================================
-       CUBES
+       ЛОГИКА КУБИКА РУБИКА (Матрицы)
     ============================================================ */
-    const materials = FACE_COLORS.map(hex => new THREE.MeshStandardMaterial({
-        color: hex, roughness: 0.35, metalness: 0.02
-    }));
-    const pieceGeometry = new THREE.BoxGeometry(0.92, 0.92, 0.92);
+    function rot(face, cw) {
+        if (cw) {
+            return [
+                [face[2][0], face[1][0], face[0][0]],
+                [face[2][1], face[1][1], face[0][1]],
+                [face[2][2], face[1][2], face[0][2]]
+            ];
+        } else {
+            return [
+                [face[0][2], face[1][2], face[2][2]],
+                [face[0][1], face[1][1], face[2][1]],
+                [face[0][0], face[1][0], face[2][0]]
+            ];
+        }
+    }
 
-    const cubes = [];
-    function createCube(cubeIndex) {
-        const group = new THREE.Group();
-        let id = 0;
-        for (let x = -1; x <= 1; x++) {
-            for (let y = -1; y <= 1; y++) {
-                for (let z = -1; z <= 1; z++) {
-                    const piece = new THREE.Mesh(pieceGeometry, materials);
-                    piece.position.set(x, y, z);
-                    piece.userData = {
-                        id: id++,
-                        cubeIndex: cubeIndex,
-                        initialPos: new THREE.Vector3(x, y, z)
-                    };
-                    group.add(piece);
+    function moveU(cw) {
+        faces[U] = rot(faces[U], cw);
+        const temp = faces[F][0].slice();
+        if (cw) {
+            faces[F][0] = faces[R][0].slice();
+            faces[R][0] = faces[B][0].slice();
+            faces[B][0] = faces[L][0].slice();
+            faces[L][0] = temp;
+        } else {
+            faces[F][0] = faces[L][0].slice();
+            faces[L][0] = faces[B][0].slice();
+            faces[B][0] = faces[R][0].slice();
+            faces[R][0] = temp;
+        }
+    }
+
+    function moveD(cw) {
+        faces[D] = rot(faces[D], cw);
+        const temp = faces[F][2].slice();
+        if (cw) {
+            faces[F][2] = faces[L][2].slice();
+            faces[L][2] = faces[B][2].slice();
+            faces[B][2] = faces[R][2].slice();
+            faces[R][2] = temp;
+        } else {
+            faces[F][2] = faces[R][2].slice();
+            faces[R][2] = faces[B][2].slice();
+            faces[B][2] = faces[L][2].slice();
+            faces[L][2] = temp;
+        }
+    }
+
+    function moveF(cw) {
+        faces[F] = rot(faces[F], cw);
+        const temp = faces[U][2].slice();
+        if (cw) {
+            faces[U][2] = faces[L][2].slice().reverse();
+            faces[L][2] = faces[D][0].slice();
+            faces[D][0] = faces[R][0].slice().reverse();
+            faces[R][0] = temp;
+        } else {
+            faces[U][2] = faces[R][0].slice();
+            faces[R][0] = faces[D][0].slice().reverse();
+            faces[D][0] = faces[L][2].slice();
+            faces[L][2] = temp.reverse();
+        }
+    }
+
+    function moveB(cw) {
+        faces[B] = rot(faces[B], cw);
+        const temp = faces[U][0].slice();
+        if (cw) {
+            faces[U][0] = faces[R][2].slice();
+            faces[R][2] = faces[D][2].slice().reverse();
+            faces[D][2] = faces[L][0].slice();
+            faces[L][0] = temp.reverse();
+        } else {
+            faces[U][0] = faces[L][0].slice().reverse();
+            faces[L][0] = faces[D][2].slice();
+            faces[D][2] = faces[R][2].slice().reverse();
+            faces[R][2] = temp;
+        }
+    }
+
+    function moveL(cw) {
+        faces[L] = rot(faces[L], cw);
+        const temp = faces[U][0].slice();
+        if (cw) {
+            faces[U][0] = faces[F][0].slice();
+            faces[F][0] = faces[D][0].slice();
+            faces[D][0] = faces[B][2].slice().reverse();
+            faces[B][2] = temp.reverse();
+        } else {
+            faces[U][0] = faces[B][2].slice().reverse();
+            faces[B][2] = faces[D][0].slice().reverse();
+            faces[D][0] = faces[F][0].slice();
+            faces[F][0] = temp;
+        }
+    }
+
+    function moveR(cw) {
+        faces[R] = rot(faces[R], cw);
+        const temp = faces[U][2].slice();
+        if (cw) {
+            faces[U][2] = faces[B][0].slice().reverse();
+            faces[B][0] = faces[D][2].slice().reverse();
+            faces[D][2] = faces[F][2].slice();
+            faces[F][2] = temp;
+        } else {
+            faces[U][2] = faces[F][2].slice();
+            faces[F][2] = faces[D][2].slice();
+            faces[D][2] = faces[B][0].slice().reverse();
+            faces[B][0] = temp.reverse();
+        }
+    }
+
+    /* ============================================================
+       АНИМАЦИЯ ЦВЕТОВ
+    ============================================================ */
+    const colorTweens = [];
+
+    function updateMeshes() {
+        for (let f = 0; f < 6; f++) {
+            for (let r = 0; r < 3; r++) {
+                for (let c = 0; c < 3; c++) {
+                    const mesh = meshes[f][r][c];
+                    const targetColor = new THREE.Color(COLORS[faces[f][r][c]]);
+                    const currentColor = mesh.material.color.clone();
+                    
+                    if (!currentColor.equals(targetColor)) {
+                        colorTweens.push({
+                            mesh,
+                            from: currentColor,
+                            to: targetColor,
+                            startTime: performance.now(),
+                            duration: 200
+                        });
+                    }
                 }
             }
         }
-        return group;
     }
 
-    // Инициализация и расстановка по сетке
-    ORIENTATIONS.forEach((o, i) => {
-        const cube = createCube(i);
-        cube.position.set(o.px, o.py, 0);
-        cube.rotation.set(o.rx, o.ry, 0);
-        scene.add(cube);
-        cubes.push(cube);
-    });
+    function processTweens(now) {
+        for (let i = colorTweens.length - 1; i >= 0; i--) {
+            const tween = colorTweens[i];
+            const t = Math.min((now - tween.startTime) / tween.duration, 1);
+            tween.mesh.material.color.lerpColors(tween.from, tween.to, t);
+            if (t >= 1) {
+                colorTweens.splice(i, 1);
+            }
+        }
+    }
 
     /* ============================================================
-       PROGRESS
+       ВВОД (Свайпы по 2D-граням)
     ============================================================ */
-    function manhattanDistance() {
-        const cube = cubes[1];
-        let total = 0;
-        for (const piece of cube.children) {
-            if (!piece.isMesh) continue;
-            const p = piece.position;
-            const init = piece.userData.initialPos;
-            total += Math.abs(Math.round(p.x) - init.x)
-                   + Math.abs(Math.round(p.y) - init.y)
-                   + Math.abs(Math.round(p.z) - init.z);
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let drag = null;
+
+    // Маппинг свайпа в ход кубика
+    // face: индекс грани, dir: направление свайпа ('LEFT','RIGHT','UP','DOWN')
+    function getMoveForSwipe(face, dir) {
+        // U (0)
+        if (face === U) {
+            if (dir === 'RIGHT') return () => moveU(true);
+            if (dir === 'LEFT')  return () => moveU(false);
+            if (dir === 'UP')    return () => moveB(true);
+            if (dir === 'DOWN')  return () => moveB(false);
         }
-        return total;
+        // D (1)
+        if (face === D) {
+            if (dir === 'RIGHT') return () => moveD(false);
+            if (dir === 'LEFT')  return () => moveD(true);
+            if (dir === 'UP')    return () => moveF(true);
+            if (dir === 'DOWN')  return () => moveF(false);
+        }
+        // F (2)
+        if (face === F) {
+            if (dir === 'RIGHT') return () => moveU(false);
+            if (dir === 'LEFT')  return () => moveU(true);
+            if (dir === 'UP')    return () => moveR(true);
+            if (dir === 'DOWN')  return () => moveR(false);
+        }
+        // B (3)
+        if (face === B) {
+            if (dir === 'RIGHT') return () => moveU(true);
+            if (dir === 'LEFT')  return () => moveU(false);
+            if (dir === 'UP')    return () => moveL(false);
+            if (dir === 'DOWN')  return () => moveL(true);
+        }
+        // L (4)
+        if (face === L) {
+            if (dir === 'RIGHT') return () => moveF(true);
+            if (dir === 'LEFT')  return () => moveF(false);
+            if (dir === 'UP')    return () => moveD(true);
+            if (dir === 'DOWN')  return () => moveD(false);
+        }
+        // R (5)
+        if (face === R) {
+            if (dir === 'RIGHT') return () => moveF(false);
+            if (dir === 'LEFT')  return () => moveF(true);
+            if (dir === 'UP')    return () => moveD(false);
+            if (dir === 'DOWN')  return () => moveD(true);
+        }
+        return null;
     }
 
+    function onPointerDown(e) {
+        const hint = document.getElementById('hint');
+        if (hint) hint.style.opacity = '0';
+
+        if (drag) return;
+        if (e.target && e.target.tagName === 'BUTTON') return;
+
+        const rect = renderer.domElement.getBoundingClientRect();
+        ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(ndc, camera);
+        const hits = raycaster.intersectObjects(scene.children, true);
+
+        let mesh = null;
+        for (const hit of hits) {
+            if (hit.object.userData && hit.object.userData.face !== undefined) {
+                mesh = hit.object;
+                break;
+            }
+        }
+        if (!mesh) return;
+
+        drag = {
+            mesh,
+            face: mesh.userData.face,
+            startX: e.clientX,
+            startY: e.clientY,
+            committed: false
+        };
+        e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+        if (!drag || drag.committed) return;
+
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+
+        if (Math.hypot(dx, dy) < DRAG_COMMIT_PX) return;
+
+        const isHorizontal = Math.abs(dx) > Math.abs(dy);
+        const dir = isHorizontal
+            ? (dx > 0 ? 'RIGHT' : 'LEFT')
+            : (dy > 0 ? 'DOWN' : 'UP');
+
+        const moveFn = getMoveForSwipe(drag.face, dir);
+        if (moveFn) {
+            moveFn();
+            updateMeshes();
+            saveGameState();
+            updateProgressUI();
+        }
+        drag.committed = true;
+    }
+
+    function onPointerUp() {
+        drag = null;
+    }
+
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+
+    /* ============================================================
+       ПРОГРЕСС И СОХРАНЕНИЕ
+    ============================================================ */
     function isSolved() {
-        const cube = cubes[1];
-        for (const piece of cube.children) {
-            if (!piece.isMesh) continue;
-            const p = piece.position;
-            const init = piece.userData.initialPos;
-            if (Math.round(p.x) !== init.x ||
-                Math.round(p.y) !== init.y ||
-                Math.round(p.z) !== init.z) return false;
-            const q = piece.quaternion;
-            const w = Math.min(1, Math.abs(q.w));
-            if (2 * Math.acos(w) > 0.1) return false;
+        for (let f = 0; f < 6; f++) {
+            const color = faces[f][1][1];
+            for (let r = 0; r < 3; r++) {
+                for (let c = 0; c < 3; c++) {
+                    if (faces[f][r][c] !== color) return false;
+                }
+            }
         }
         return true;
     }
 
     function calculateProgress() {
+        let correct = 0;
+        let total = 54;
+        for (let f = 0; f < 6; f++) {
+            const centerColor = faces[f][1][1];
+            for (let r = 0; r < 3; r++) {
+                for (let c = 0; c < 3; c++) {
+                    if (faces[f][r][c] === centerColor) correct++;
+                }
+            }
+        }
         if (isSolved()) return 100;
-        const raw = 100 - (manhattanDistance() / MAX_MANHATTAN) * 100;
-        return Math.max(0, Math.min(99, Math.round(raw)));
+        return Math.max(0, Math.min(99, Math.round((correct / total) * 100)));
     }
 
     const elFill  = document.getElementById('progress-fill');
@@ -247,320 +510,83 @@
         elValue.classList.toggle('solved', pct >= 100);
     }
 
-    /* ============================================================
-       SAVE / LOAD
-    ============================================================ */
     function saveGameState() {
         try {
-            const payload = cubes.map(cube =>
-                cube.children.filter(c => c.isMesh).map(piece => ({
-                    id: piece.userData.id,
-                    px: piece.position.x, py: piece.position.y, pz: piece.position.z,
-                    qx: piece.quaternion.x, qy: piece.quaternion.y,
-                    qz: piece.quaternion.z, qw: piece.quaternion.w
-                }))
-            );
-            localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
-        } catch (e) { /* ignore */ }
+            localStorage.setItem(SAVE_KEY, JSON.stringify(faces));
+        } catch (e) {}
     }
 
     function loadGameState() {
-        let raw;
-        try { raw = localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
-        if (!raw) return false;
         try {
-            const payload = JSON.parse(raw);
-            if (!Array.isArray(payload) || payload.length !== cubes.length) return false;
-            cubes.forEach((cube, ci) => {
-                const cubeData = payload[ci];
-                if (!Array.isArray(cubeData)) return;
-                const lookup = new Map(cubeData.map(e => [e.id, e]));
-                for (const piece of cube.children) {
-                    if (!piece.isMesh) continue;
-                    const saved = lookup.get(piece.userData.id);
-                    if (saved) {
-                        piece.position.set(saved.px, saved.py, saved.pz);
-                        piece.quaternion.set(saved.qx, saved.qy, saved.qz, saved.qw);
+            const raw = localStorage.getItem(SAVE_KEY);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length === 6) {
+                faces = parsed;
+                updateMeshes();
+                // Мгновенно устанавливаем цвета без анимации при загрузке
+                for (let f = 0; f < 6; f++) {
+                    for (let r = 0; r < 3; r++) {
+                        for (let c = 0; c < 3; c++) {
+                            meshes[f][r][c].material.color.setHex(COLORS[faces[f][r][c]]);
+                        }
                     }
                 }
-            });
-            return true;
-        } catch (e) { return false; }
-    }
-
-    /* ============================================================
-       SWIPE PARAMS
-    ============================================================ */
-    function getSwipeParams(cubeIndex, dir) {
-        const isRight = dir === 'RIGHT';
-        const isDown  = dir === 'DOWN';
-        const isHorizontal = isRight || dir === 'LEFT';
-
-        if (isHorizontal) {
-            return { axis: 'Y', layerCoord: 'y', sign: isRight ? 1 : -1 };
-        } else {
-            switch (cubeIndex) {
-                case 1: return { axis: 'X', layerCoord: 'x', sign: isDown ?  1 : -1 }; // FRONT
-                case 3: return { axis: 'X', layerCoord: 'x', sign: isDown ? -1 :  1 }; // BACK
-                case 4: return { axis: 'Z', layerCoord: 'z', sign: isDown ?  1 : -1 }; // LEFT
-                case 5: return { axis: 'Z', layerCoord: 'z', sign: isDown ? -1 :  1 }; // RIGHT
-                case 0: return { axis: 'X', layerCoord: 'x', sign: isDown ?  1 : -1 }; // ROOF
-                default: return { axis: 'X', layerCoord: 'x', sign: isDown ? -1 :  1 }; // FLOOR
             }
-        }
+        } catch (e) {}
     }
 
     /* ============================================================
-       PIVOTS & ANIMATION
-    ============================================================ */
-    function createPivotsForLayer(axisKey, layer) {
-        const pivots = [];
-        cubes.forEach(cube => {
-            const pieces = [];
-            for (const child of cube.children) {
-                if (child.isMesh && Math.round(child.position[axisKey]) === layer) {
-                    pieces.push(child);
-                }
-            }
-            const pivot = new THREE.Group();
-            cube.add(pivot);
-            pieces.forEach(p => pivot.add(p));
-            pivots.push({ cube, pivot });
-        });
-        return pivots;
-    }
-
-    const animationQueue = [];
-    function easeOutCubic(t) { const u = 1 - t; return 1 - u * u * u; }
-
-    function enqueueTask(task) {
-        if (!task.pivots) task.pivots = null;
-        animationQueue.push(task);
-    }
-
-    function startScrambleRotation(axis, layer, angle) {
-        enqueueTask({
-            axisKey: axis.toLowerCase(),
-            layer: layer,
-            startAngle: 0,
-            targetAngle: angle,
-            startTime: null,
-            duration: SCRAMBLE_DURATION_MS,
-            isScrambling: true,
-            targetCubeIndex: null,
-            pivots: null
-        });
-    }
-
-    /* ============================================================
-       INPUT (Real-time drag)
-    ============================================================ */
-    const raycaster = new THREE.Raycaster();
-    const ndc = new THREE.Vector2();
-    let drag = null;
-
-    function onPointerDown(e) {
-        // Скрываем подсказку при первом взаимодействии
-        const hint = document.getElementById('hint');
-        if (hint) hint.style.opacity = '0';
-
-        if (drag || animationQueue.length > 0) return;
-        if (e.target && e.target.tagName === 'BUTTON') return;
-
-        const rect = renderer.domElement.getBoundingClientRect();
-        ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-        raycaster.setFromCamera(ndc, camera);
-        const hits = raycaster.intersectObjects(scene.children, true);
-
-        let piece = null;
-        for (const hit of hits) {
-            if (hit.object.userData && hit.object.userData.id !== undefined) {
-                piece = hit.object;
-                break;
-            }
-        }
-        if (!piece) return;
-
-        drag = {
-            piece, cubeIndex: piece.userData.cubeIndex,
-            startX: e.clientX, startY: e.clientY,
-            committed: false, pivots: null, axisKey: null, layer: null,
-            effectiveSign: 0, isHorizontal: false, currentAngle: 0
-        };
-        e.preventDefault();
-    }
-
-    function onPointerMove(e) {
-        if (!drag) return;
-
-        const dx = e.clientX - drag.startX;
-        const dy = e.clientY - drag.startY;
-
-        if (!drag.committed) {
-            if (Math.hypot(dx, dy) < DRAG_COMMIT_PX) return;
-
-            const isHorizontal = Math.abs(dx) > Math.abs(dy);
-            const dir = isHorizontal
-                ? (dx > 0 ? 'RIGHT' : 'LEFT')
-                : (dy > 0 ? 'DOWN' : 'UP');
-            const params = getSwipeParams(drag.cubeIndex, dir);
-
-            drag.axisKey      = params.axis.toLowerCase();
-            drag.layer        = Math.round(drag.piece.position[params.layerCoord]);
-            drag.isHorizontal = isHorizontal;
-            
-            const primarySign = (dir === 'RIGHT' || dir === 'DOWN') ? 1 : -1;
-            drag.effectiveSign = params.sign * primarySign;
-            drag.pivots = createPivotsForLayer(drag.axisKey, drag.layer);
-            drag.committed = true;
-        }
-
-        const dist = drag.isHorizontal ? dx : dy;
-        const rad = drag.effectiveSign * (dist / DRAG_PX_PER_90) * (Math.PI / 2);
-        drag.currentAngle = rad;
-
-        for (const { pivot } of drag.pivots) {
-            pivot.rotation[drag.axisKey] = rad;
-        }
-        e.preventDefault();
-    }
-
-    function finalizeDrag() {
-        if (!drag) return;
-        const d = drag;
-        drag = null;
-
-        if (!d.committed) return;
-
-        const target = Math.round(d.currentAngle / (Math.PI / 2)) * (Math.PI / 2);
-        enqueueTask({
-            axisKey: d.axisKey, layer: d.layer,
-            startAngle: d.currentAngle, targetAngle: target,
-            startTime: null, duration: ANIM_DURATION_MS,
-            isScrambling: false, targetCubeIndex: d.cubeIndex, pivots: d.pivots
-        });
-    }
-
-    function onPointerUp() { if (drag) finalizeDrag(); }
-    function onPointerCancel() { if (drag) finalizeDrag(); }
-
-    renderer.domElement.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('pointermove', onPointerMove, { passive: false });
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerCancel);
-
-    /* ============================================================
-       BUTTONS
+       КНОПКИ
     ============================================================ */
     document.getElementById('btn-scramble').addEventListener('click', () => {
-        if (animationQueue.length > 0 || drag) return;
-        const axes = ['X', 'Y', 'Z'];
-        const layers = [-1, 0, 1];
+        if (drag) return;
+        const moves = [moveU, moveD, moveF, moveB, moveL, moveR];
         for (let i = 0; i < SCRAMBLE_MOVES; i++) {
-            const axis  = axes[(Math.random() * 3) | 0];
-            const layer = layers[(Math.random() * 3) | 0];
-            const sign  = Math.random() < 0.5 ? 1 : -1;
-            startScrambleRotation(axis, layer, sign * Math.PI / 2);
+            const moveFn = moves[(Math.random() * 6) | 0];
+            moveFn(Math.random() < 0.5);
         }
+        updateMeshes();
+        saveGameState();
+        updateProgressUI();
     });
 
     document.getElementById('btn-reset').addEventListener('click', () => {
-        if (animationQueue.length > 0 || drag) return;
+        if (drag) return;
         try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
         location.reload();
     });
 
     /* ============================================================
-       MAIN LOOP
+       ГЛАВНЫЙ ЦИКЛ
     ============================================================ */
     function animate(now) {
         requestAnimationFrame(animate);
         now = now || performance.now();
-
-        if (animationQueue.length > 0) {
-            const task = animationQueue[0];
-            if (task.startTime === null) {
-                task.startTime = now;
-                if (task.pivots === null) {
-                    task.pivots = createPivotsForLayer(task.axisKey, task.layer);
-                }
-            }
-
-            const elapsed = now - task.startTime;
-            const rawT = Math.min(elapsed / task.duration, 1);
-            const eased = easeOutCubic(rawT);
-            const angle = task.startAngle + (task.targetAngle - task.startAngle) * eased;
-
-            for (const { pivot } of task.pivots) {
-                pivot.rotation[task.axisKey] = angle;
-            }
-
-            if (!task.isScrambling && task.targetCubeIndex !== null) {
-                const pulse = 1 + 0.04 * Math.sin(rawT * Math.PI);
-                cubes.forEach((cube, i) => {
-                    cube.scale.setScalar(i === task.targetCubeIndex ? pulse : 1);
-                });
-            }
-
-            if (rawT >= 1) {
-                for (const { cube, pivot } of task.pivots) {
-                    pivot.rotation[task.axisKey] = task.targetAngle;
-                    pivot.updateMatrixWorld(true);
-                    const pieces = pivot.children.slice();
-                    for (const piece of pieces) {
-                        cube.attach(piece);
-                        piece.position.set(
-                            Math.round(piece.position.x),
-                            Math.round(piece.position.y),
-                            Math.round(piece.position.z)
-                        );
-                    }
-                    cube.remove(pivot);
-                }
-                if (!task.isScrambling) {
-                    cubes.forEach(c => c.scale.setScalar(1));
-                }
-                animationQueue.shift();
-                if (animationQueue.length === 0) {
-                    saveGameState();
-                    updateProgressUI();
-                }
-            }
-        }
-
+        processTweens(now);
         renderer.render(scene, camera);
     }
 
     /* ============================================================
-       ADAPTIVE RESIZE (Fits 2x3 grid tightly on any screen)
+       РЕСАЙЗ
     ============================================================ */
     function resize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
         const aspect = w / h;
 
-        // 1. Вычисляем точные границы сетки 2x3
-        // По X: от -CUBE_GAP/2 - 1.5 до CUBE_GAP/2 + 1.5  =>  -2.1-1.5 = -3.6 ... 3.6 (ширина 7.2)
-        // По Y: от -CUBE_GAP - 1.5 до CUBE_GAP + 1.5  =>  -4.2-1.5 = -5.7 ... 5.7 (высота 11.4)
-        const gridWidth = 7.2;
-        const gridHeight = 11.4;
-
-        // 2. Добавляем отступы (падинги)
-        // По ширине 15% (чтобы кубики не прилипали к краям экрана)
-        // По высоте 45% (чтобы оставить место для HUD сверху и кнопок снизу)
-        const padWidth = gridWidth * 1.15;   // ~8.28
-        const padHeight = gridHeight * 1.45; // ~16.53
+        // 2 колонки, 3 ряда
+        const gridWidth = 9.0;
+        const gridHeight = 13.0;
+        const padWidth = gridWidth * 1.1;
+        const padHeight = gridHeight * 1.4;
 
         let frustumWidth, frustumHeight;
 
-        // 3. Подгоняем камеру под пропорции экрана устройства
         if (aspect < padWidth / padHeight) {
-            // Экран уже, чем нужно (узкий телефон) -> привязываемся по ширине
             frustumWidth = padWidth;
             frustumHeight = padWidth / aspect;
         } else {
-            // Экран шире (планшет, десктоп) -> привязываемся по высоте
             frustumHeight = padHeight;
             frustumWidth = padHeight * aspect;
         }
@@ -570,28 +596,23 @@
         camera.top    =  frustumHeight / 2;
         camera.bottom = -frustumHeight / 2;
         camera.updateProjectionMatrix();
-        
         renderer.setSize(w, h);
 
-        // 4. Динамическая чувствительность свайпа
-        // Сколько пикселей на экране занимает одна единица 3D-пространства
         const pixelsPerUnit = w / frustumWidth;
-        // Чтобы повернуть на 90 градусов, нужно свайпнуть примерно на ширину одной грани (~2 единицы)
         DRAG_PX_PER_90 = pixelsPerUnit * 2.0;
     }
-    
+
     window.addEventListener('resize', resize);
     window.addEventListener('orientationchange', () => setTimeout(resize, 100));
 
     /* ============================================================
-       BOOT
+       СТАРТ
     ============================================================ */
     resize();
     loadGameState();
     updateProgressUI();
     animate();
 
-    // Скрываем подсказку через 6 секунд даже без действий
     setTimeout(() => {
         const hint = document.getElementById('hint');
         if (hint) hint.style.opacity = '0';
