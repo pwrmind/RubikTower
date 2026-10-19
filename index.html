@@ -107,7 +107,7 @@
 (function () {
     'use strict';
 
-    const SAVE_KEY = 'rubiks_3d_v11';
+    const SAVE_KEY = 'rubiks_3d_v12';
     const ANIM_DURATION_MS = 200;
     const SCRAMBLE_MOVES = 16;
     const DRAG_COMMIT_PX = 12;
@@ -124,9 +124,6 @@
         { name: 'LEFT',  rx:  0,           ry: Math.PI / 2, px: -CUBE_GAP/2, py: -CUBE_GAP },
         { name: 'RIGHT', rx:  0,           ry: -Math.PI / 2,px:  CUBE_GAP/2, py: -CUBE_GAP }
     ];
-
-    // Маппинг знаков для горизонтальных свайпов
-    const H_MULT = [-1, -1, -1, 1, 1, 1]; // [ROOF, FRONT, FLOOR, BACK, LEFT, RIGHT]
 
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 1000);
@@ -173,36 +170,73 @@
     const animationQueue = [];
     function easeOutCubic(t) { const u = 1 - t; return 1 - u * u * u; }
 
-    function createPivots(axisKey, layer) {
+    // ГЛАВНОЕ ИСПРАВЛЕНИЕ: Вычисляем глобальные оси и слои
+    function createPivots(globalAxisKey, globalLayer, globalAngle) {
         const pivots = [];
+        const globalAxisVec = new THREE.Vector3();
+        if (globalAxisKey === 'x') globalAxisVec.set(1, 0, 0);
+        if (globalAxisKey === 'y') globalAxisVec.set(0, 1, 0);
+        if (globalAxisKey === 'z') globalAxisVec.set(0, 0, 1);
+
         cubes.forEach(cube => {
+            // Находим, какая локальная ось соответствует глобальной
+            const localAxisVec = globalAxisVec.clone().applyQuaternion(cube.quaternion.clone().inverse());
+            let localAxisKey, localSign;
+            if (Math.abs(localAxisVec.x) > 0.5) { localAxisKey = 'x'; localSign = Math.sign(localAxisVec.x); }
+            else if (Math.abs(localAxisVec.y) > 0.5) { localAxisKey = 'y'; localSign = Math.sign(localAxisVec.y); }
+            else { localAxisKey = 'z'; localSign = Math.sign(localAxisVec.z); }
+
             const pieces = [];
             for (const child of cube.children) {
-                if (child.isMesh && Math.round(child.position[axisKey]) === layer) {
+                if (!child.isMesh) continue;
+                // Вычисляем ГЛОБАЛЬНУЮ позицию детали и проверяем, лежит ли она в нужном слое
+                const globalPos = child.position.clone().applyQuaternion(cube.quaternion);
+                if (Math.round(globalPos[globalAxisKey]) === globalLayer) {
                     pieces.push(child);
                 }
             }
+
+            if (pieces.length === 0) return; // Этот куб не затрагивается
+
             const pivot = new THREE.Group();
             cube.add(pivot);
             pieces.forEach(p => pivot.add(p));
-            pivots.push({ cube, pivot });
+
+            pivots.push({ 
+                cube, pivot, 
+                localAxisKey, 
+                localSign
+            });
         });
         return pivots;
     }
 
-    function startRotation(axis, layer, angle) {
-        animationQueue.push({
-            axisKey: axis.toLowerCase(),
-            layer: layer,
-            startAngle: 0,
-            targetAngle: angle,
-            startTime: null,
-            duration: ANIM_DURATION_MS,
-            pivots: null
-        });
+    // Возвращает глобальную ось и угол для свайпа
+    function getGlobalMove(cubeIndex, isHorizontal, dir) {
+        let axis, angle;
+        if (cubeIndex === 1) { // FRONT
+            if (isHorizontal) { axis = 'y'; angle = (dir === 'RIGHT' ? -Math.PI/2 : Math.PI/2); }
+            else { axis = 'x'; angle = (dir === 'UP' ? Math.PI/2 : -Math.PI/2); }
+        } else if (cubeIndex === 3) { // BACK
+            if (isHorizontal) { axis = 'y'; angle = (dir === 'RIGHT' ? Math.PI/2 : -Math.PI/2); }
+            else { axis = 'x'; angle = (dir === 'UP' ? -Math.PI/2 : Math.PI/2); }
+        } else if (cubeIndex === 0) { // ROOF
+            if (isHorizontal) { axis = 'z'; angle = (dir === 'RIGHT' ? -Math.PI/2 : Math.PI/2); }
+            else { axis = 'x'; angle = (dir === 'UP' ? -Math.PI/2 : Math.PI/2); }
+        } else if (cubeIndex === 2) { // FLOOR
+            if (isHorizontal) { axis = 'z'; angle = (dir === 'RIGHT' ? Math.PI/2 : -Math.PI/2); }
+            else { axis = 'x'; angle = (dir === 'UP' ? Math.PI/2 : -Math.PI/2); }
+        } else if (cubeIndex === 4) { // LEFT
+            if (isHorizontal) { axis = 'z'; angle = (dir === 'RIGHT' ? Math.PI/2 : -Math.PI/2); }
+            else { axis = 'y'; angle = (dir === 'UP' ? -Math.PI/2 : Math.PI/2); }
+        } else if (cubeIndex === 5) { // RIGHT
+            if (isHorizontal) { axis = 'z'; angle = (dir === 'RIGHT' ? -Math.PI/2 : Math.PI/2); }
+            else { axis = 'y'; angle = (dir === 'UP' ? Math.PI/2 : -Math.PI/2); }
+        }
+        return { axis, angle };
     }
 
-    // --- ВВОД И ОПРЕДЕЛЕНИЕ ХОДОВ ---
+    // --- ВВОД ---
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     let drag = null;
@@ -239,8 +273,8 @@
         drag = {
             piece, cubeIndex,
             startX: e.clientX, startY: e.clientY,
-            committed: false, pivots: null, axisKey: null, layer: null,
-            effectiveSign: 0, isHorizontal: false, currentAngle: 0
+            committed: false, pivots: null, axis: null, layer: null,
+            currentAngle: 0
         };
         e.preventDefault();
     }
@@ -254,46 +288,30 @@
         if (!drag.committed) {
             if (Math.hypot(dx, dy) < DRAG_COMMIT_PX) return;
 
-            drag.isHorizontal = Math.abs(dx) > Math.abs(dy);
+            const isHorizontal = Math.abs(dx) > Math.abs(dy);
+            const dir = isHorizontal ? (dx > 0 ? 'RIGHT' : 'LEFT') : (dy > 0 ? 'DOWN' : 'UP');
             
-            // Используем ТЕКУЩИЕ координаты для определения слоя!
-            const p = drag.piece.position; 
-            let axisKey, layer, mult;
+            const move = getGlobalMove(drag.cubeIndex, isHorizontal, dir);
+            if (!move.axis) return;
 
-            if (drag.isHorizontal) {
-                axisKey = 'y';
-                layer = Math.round(p.y);
-                const isRight = dx > 0;
-                mult = H_MULT[drag.cubeIndex];
-                drag.effectiveSign = mult * (isRight ? 1 : -1);
-            } else {
-                const isUp = dy < 0;
-                if (drag.cubeIndex === 0) { // ROOF
-                    axisKey = 'z'; layer = Math.round(p.x);
-                    drag.effectiveSign = isUp ? -1 : 1;
-                } else if (drag.cubeIndex === 2) { // FLOOR
-                    axisKey = 'z'; layer = Math.round(p.x);
-                    drag.effectiveSign = isUp ? 1 : -1;
-                } else {
-                    axisKey = 'x';
-                    layer = Math.round((drag.cubeIndex === 4 || drag.cubeIndex === 5) ? p.z : p.x);
-                    if (drag.cubeIndex === 1 || drag.cubeIndex === 4) drag.effectiveSign = isUp ? -1 : 1;
-                    else drag.effectiveSign = isUp ? 1 : -1;
-                }
-            }
+            // Вычисляем слой по глобальной позиции нажатой детали
+            const globalPos = drag.piece.position.clone().applyQuaternion(cubes[drag.cubeIndex].quaternion);
+            const layer = Math.round(globalPos[move.axis]);
 
-            drag.axisKey = axisKey;
+            drag.axis = move.axis;
             drag.layer = layer;
-            drag.pivots = createPivots(axisKey, layer);
+            drag.pivots = createPivots(move.axis, layer, move.angle);
             drag.committed = true;
         }
 
-        const dist = drag.isHorizontal ? dx : dy;
-        const rad = drag.effectiveSign * (dist / DRAG_PX_PER_90) * (Math.PI / 2);
+        const dist = drag.axis === 'y' || drag.axis === 'x' ? (Math.abs(dx) > Math.abs(dy) ? dx : dy) : dx;
+        // Для простоты берем проекцию на экран
+        const screenDist = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+        const rad = (screenDist / DRAG_PX_PER_90) * (Math.PI / 2);
         drag.currentAngle = rad;
 
-        for (const { pivot } of drag.pivots) {
-            pivot.rotation[drag.axisKey] = rad;
+        for (const p of drag.pivots) {
+            p.pivot.rotation[p.localAxisKey] = drag.currentAngle * p.localSign;
         }
         e.preventDefault();
     }
@@ -305,12 +323,13 @@
 
         if (!d.committed) return;
 
-        const target = Math.round(d.currentAngle / (Math.PI / 2)) * (Math.PI / 2);
+        const targetGlobalAngle = Math.round(d.currentAngle / (Math.PI / 2)) * (Math.PI / 2);
         animationQueue.push({
-            axisKey: d.axisKey, layer: d.layer,
-            startAngle: d.currentAngle, targetAngle: target,
-            startTime: null, duration: ANIM_DURATION_MS,
-            pivots: d.pivots
+            pivots: d.pivots,
+            startAngle: d.currentAngle,
+            targetAngle: targetGlobalAngle,
+            startTime: null,
+            duration: ANIM_DURATION_MS
         });
     }
 
@@ -329,35 +348,30 @@
 
         if (animationQueue.length > 0) {
             const task = animationQueue[0];
-            if (task.startTime === null) {
-                task.startTime = now;
-                if (!task.pivots) {
-                    task.pivots = createPivots(task.axisKey, task.layer);
-                }
-            }
+            if (task.startTime === null) task.startTime = now;
 
             const elapsed = now - task.startTime;
             const rawT = Math.min(elapsed / task.duration, 1);
             const angle = task.startAngle + (task.targetAngle - task.startAngle) * easeOutCubic(rawT);
 
-            for (const { pivot } of task.pivots) {
-                pivot.rotation[task.axisKey] = angle;
+            for (const p of task.pivots) {
+                p.pivot.rotation[p.localAxisKey] = angle * p.localSign;
             }
 
             if (rawT >= 1) {
-                for (const { cube, pivot } of task.pivots) {
-                    pivot.rotation[task.axisKey] = task.targetAngle;
-                    pivot.updateMatrixWorld(true);
-                    const pieces = pivot.children.slice();
+                for (const p of task.pivots) {
+                    p.pivot.rotation[p.localAxisKey] = task.targetAngle * p.localSign;
+                    p.pivot.updateMatrixWorld(true);
+                    const pieces = p.pivot.children.slice();
                     for (const piece of pieces) {
-                        cube.attach(piece);
+                        p.cube.attach(piece);
                         piece.position.set(
                             Math.round(piece.position.x),
                             Math.round(piece.position.y),
                             Math.round(piece.position.z)
                         );
                     }
-                    cube.remove(pivot);
+                    p.cube.remove(p.pivot);
                 }
                 animationQueue.shift();
                 if (animationQueue.length === 0) {
@@ -369,7 +383,7 @@
         renderer.render(scene, camera);
     }
 
-    // --- ПРОГРЕСС И СОХРАНЕНИЕ ---
+    // --- ПРОГРЕСС ---
     function isSolved() {
         const cube = cubes[1];
         for (const piece of cube.children) {
@@ -405,6 +419,7 @@
         elValue.classList.toggle('solved', pct >= 100);
     }
 
+    // --- СОХРАНЕНИЕ ---
     function saveGameState() {
         try {
             const data = cubes.map(cube => cube.children.filter(c => c.isMesh).map(p => ({
@@ -438,13 +453,23 @@
     // --- КНОПКИ ---
     document.getElementById('btn-scramble').addEventListener('click', () => {
         if (drag || animationQueue.length > 0) return;
-        const axes = ['X', 'Y', 'Z'];
+        const axes = ['x', 'y', 'z'];
         const layers = [-1, 0, 1];
         for (let i = 0; i < SCRAMBLE_MOVES; i++) {
             const axis = axes[(Math.random() * 3) | 0];
             const layer = layers[(Math.random() * 3) | 0];
             const angle = (Math.random() < 0.5 ? 1 : -1) * Math.PI / 2;
-            startRotation(axis, layer, angle);
+            // Создаем задачу скрамбла
+            const pivots = createPivots(axis, layer, angle);
+            if (pivots.length > 0) {
+                animationQueue.push({
+                    pivots,
+                    startAngle: 0,
+                    targetAngle: angle,
+                    startTime: null,
+                    duration: 100 // Быстро
+                });
+            }
         }
     });
 
