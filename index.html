@@ -17,7 +17,6 @@
     #canvas-container { position: fixed; inset: 0; }
     #canvas-container canvas { display: block; touch-action: none; }
 
-    /* HUD */
     #hud {
         position: fixed; top: 0; left: 0; right: 0;
         padding: max(12px, env(safe-area-inset-top)) 16px 12px;
@@ -50,7 +49,6 @@
         color: #ffd23f; text-shadow: 0 0 20px rgba(255, 210, 63, 0.7);
     }
 
-    /* Controls */
     #controls {
         position: fixed; bottom: 0; left: 0; right: 0;
         padding: 16px 16px max(20px, env(safe-area-inset-bottom));
@@ -96,7 +94,7 @@
     <div id="progress-value">100%</div>
 </div>
 
-<div id="hint">Свайпайте по граням.<br>Двигаются только затронутые слои.</div>
+<div id="hint">Свайпайте по граням, чтобы вращать слои.</div>
 
 <div id="controls">
     <button class="btn accent" id="btn-scramble">Перемешать</button>
@@ -107,9 +105,9 @@
 (function () {
     'use strict';
 
-    const SAVE_KEY = 'rubiks_3d_v12';
+    const SAVE_KEY = 'rubiks_3d_v13';
     const ANIM_DURATION_MS = 200;
-    const SCRAMBLE_MOVES = 16;
+    const SCRAMBLE_MOVES = 20;
     const DRAG_COMMIT_PX = 12;
     let DRAG_PX_PER_90 = 100;
 
@@ -135,8 +133,8 @@
     renderer.setClearColor(0x000000, 0);
     document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.55);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.78));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 0.5);
     keyLight.position.set(5, 8, 15);
     scene.add(keyLight);
 
@@ -170,44 +168,40 @@
     const animationQueue = [];
     function easeOutCubic(t) { const u = 1 - t; return 1 - u * u * u; }
 
-    // ГЛАВНОЕ ИСПРАВЛЕНИЕ: Вычисляем глобальные оси и слои
-    function createPivots(globalAxisKey, globalLayer, globalAngle) {
+    // ===== ИСПРАВЛЕННЫЙ createPivots (по вашей диагностике) =====
+    function createPivots(cubeIndex, globalAxisKey, globalLayer) {
         const pivots = [];
+        const cube = cubes[cubeIndex];
+
         const globalAxisVec = new THREE.Vector3();
         if (globalAxisKey === 'x') globalAxisVec.set(1, 0, 0);
-        if (globalAxisKey === 'y') globalAxisVec.set(0, 1, 0);
-        if (globalAxisKey === 'z') globalAxisVec.set(0, 0, 1);
+        else if (globalAxisKey === 'y') globalAxisVec.set(0, 1, 0);
+        else globalAxisVec.set(0, 0, 1);
 
-        cubes.forEach(cube => {
-            // Находим, какая локальная ось соответствует глобальной
-            const localAxisVec = globalAxisVec.clone().applyQuaternion(cube.quaternion.clone().inverse());
-            let localAxisKey, localSign;
-            if (Math.abs(localAxisVec.x) > 0.5) { localAxisKey = 'x'; localSign = Math.sign(localAxisVec.x); }
-            else if (Math.abs(localAxisVec.y) > 0.5) { localAxisKey = 'y'; localSign = Math.sign(localAxisVec.y); }
-            else { localAxisKey = 'z'; localSign = Math.sign(localAxisVec.z); }
+        const localAxisVec = globalAxisVec.clone().applyQuaternion(cube.quaternion.clone().inverse());
 
-            const pieces = [];
-            for (const child of cube.children) {
-                if (!child.isMesh) continue;
-                // Вычисляем ГЛОБАЛЬНУЮ позицию детали и проверяем, лежит ли она в нужном слое
-                const globalPos = child.position.clone().applyQuaternion(cube.quaternion);
-                if (Math.round(globalPos[globalAxisKey]) === globalLayer) {
-                    pieces.push(child);
-                }
+        let localAxisKey, localSign;
+        if (Math.abs(localAxisVec.x) > 0.5) { localAxisKey = 'x'; localSign = Math.sign(localAxisVec.x); }
+        else if (Math.abs(localAxisVec.y) > 0.5) { localAxisKey = 'y'; localSign = Math.sign(localAxisVec.y); }
+        else { localAxisKey = 'z'; localSign = Math.sign(localAxisVec.z); }
+
+        const pieces = [];
+        for (const child of cube.children) {
+            if (!child.isMesh) continue;
+            const worldPos = child.position.clone()
+                .applyQuaternion(cube.quaternion)
+                .add(cube.position);
+            if (Math.round(worldPos[globalAxisKey]) === globalLayer) {
+                pieces.push(child);
             }
+        }
 
-            if (pieces.length === 0) return; // Этот куб не затрагивается
+        if (pieces.length === 0) return pivots;
 
-            const pivot = new THREE.Group();
-            cube.add(pivot);
-            pieces.forEach(p => pivot.add(p));
-
-            pivots.push({ 
-                cube, pivot, 
-                localAxisKey, 
-                localSign
-            });
-        });
+        const pivot = new THREE.Group();
+        cube.add(pivot);
+        pieces.forEach(p => pivot.add(p));
+        pivots.push({ cube, pivot, localAxisKey, localSign });
         return pivots;
     }
 
@@ -236,7 +230,7 @@
         return { axis, angle };
     }
 
-    // --- ВВОД ---
+    // ===== ВВОД =====
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     let drag = null;
@@ -273,7 +267,7 @@
         drag = {
             piece, cubeIndex,
             startX: e.clientX, startY: e.clientY,
-            committed: false, pivots: null, axis: null, layer: null,
+            committed: false, pivots: null, targetAngle: 0,
             currentAngle: 0
         };
         e.preventDefault();
@@ -289,26 +283,31 @@
             if (Math.hypot(dx, dy) < DRAG_COMMIT_PX) return;
 
             const isHorizontal = Math.abs(dx) > Math.abs(dy);
-            const dir = isHorizontal ? (dx > 0 ? 'RIGHT' : 'LEFT') : (dy > 0 ? 'DOWN' : 'UP');
-            
+            const dir = isHorizontal
+                ? (dx > 0 ? 'RIGHT' : 'LEFT')
+                : (dy > 0 ? 'DOWN' : 'UP');
+
             const move = getGlobalMove(drag.cubeIndex, isHorizontal, dir);
             if (!move.axis) return;
 
-            // Вычисляем слой по глобальной позиции нажатой детали
-            const globalPos = drag.piece.position.clone().applyQuaternion(cubes[drag.cubeIndex].quaternion);
-            const layer = Math.round(globalPos[move.axis]);
+            const cube = cubes[drag.cubeIndex];
+            const worldPos = drag.piece.position.clone()
+                .applyQuaternion(cube.quaternion)
+                .add(cube.position);
+            const layer = Math.round(worldPos[move.axis]);
 
-            drag.axis = move.axis;
-            drag.layer = layer;
-            drag.pivots = createPivots(move.axis, layer, move.angle);
+            drag.pivots = createPivots(drag.cubeIndex, move.axis, layer);
+            if (drag.pivots.length === 0) return;
+
+            drag.targetAngle = move.angle;
+            drag.isHorizontal = isHorizontal;
             drag.committed = true;
         }
 
-        const dist = drag.axis === 'y' || drag.axis === 'x' ? (Math.abs(dx) > Math.abs(dy) ? dx : dy) : dx;
-        // Для простоты берем проекцию на экран
-        const screenDist = Math.abs(dx) > Math.abs(dy) ? dx : dy;
-        const rad = (screenDist / DRAG_PX_PER_90) * (Math.PI / 2);
-        drag.currentAngle = rad;
+        // Прогресс по свайпу
+        const dragDist = drag.isHorizontal ? Math.abs(dx) : Math.abs(dy);
+        const dragFraction = Math.min(dragDist / DRAG_PX_PER_90, 1.5);
+        drag.currentAngle = drag.targetAngle * dragFraction;
 
         for (const p of drag.pivots) {
             p.pivot.rotation[p.localAxisKey] = drag.currentAngle * p.localSign;
@@ -321,13 +320,13 @@
         const d = drag;
         drag = null;
 
-        if (!d.committed) return;
+        if (!d.committed || d.pivots.length === 0) return;
 
-        const targetGlobalAngle = Math.round(d.currentAngle / (Math.PI / 2)) * (Math.PI / 2);
+        const target = Math.round(d.currentAngle / (Math.PI / 2)) * (Math.PI / 2);
         animationQueue.push({
             pivots: d.pivots,
             startAngle: d.currentAngle,
-            targetAngle: targetGlobalAngle,
+            targetAngle: target,
             startTime: null,
             duration: ANIM_DURATION_MS
         });
@@ -341,7 +340,7 @@
     window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('pointercancel', onPointerCancel);
 
-    // --- АНИМАЦИЯ ---
+    // ===== АНИМАЦИЯ =====
     function animate(now) {
         requestAnimationFrame(animate);
         now = now || performance.now();
@@ -383,31 +382,38 @@
         renderer.render(scene, camera);
     }
 
-    // --- ПРОГРЕСС ---
+    // ===== ПРОГРЕСС (по всем 6 кубам) =====
     function isSolved() {
-        const cube = cubes[1];
-        for (const piece of cube.children) {
-            if (!piece.isMesh) continue;
-            const p = piece.position;
-            const init = piece.userData.initialPos;
-            if (Math.round(p.x) !== init.x || Math.round(p.y) !== init.y || Math.round(p.z) !== init.z) return false;
-            const w = Math.min(1, Math.abs(piece.quaternion.w));
-            if (2 * Math.acos(w) > 0.1) return false;
+        for (const cube of cubes) {
+            for (const piece of cube.children) {
+                if (!piece.isMesh) continue;
+                const p = piece.position;
+                const init = piece.userData.initialPos;
+                if (Math.round(p.x) !== init.x ||
+                    Math.round(p.y) !== init.y ||
+                    Math.round(p.z) !== init.z) return false;
+                const w = Math.min(1, Math.abs(piece.quaternion.w));
+                if (2 * Math.acos(w) > 0.1) return false;
+            }
         }
         return true;
     }
 
     function calculateProgress() {
         if (isSolved()) return 100;
-        const cube = cubes[1];
         let totalDist = 0;
-        for (const piece of cube.children) {
-            if (!piece.isMesh) continue;
-            const p = piece.position;
-            const init = piece.userData.initialPos;
-            totalDist += Math.abs(Math.round(p.x) - init.x) + Math.abs(Math.round(p.y) - init.y) + Math.abs(Math.round(p.z) - init.z);
+        for (const cube of cubes) {
+            for (const piece of cube.children) {
+                if (!piece.isMesh) continue;
+                const p = piece.position;
+                const init = piece.userData.initialPos;
+                totalDist += Math.abs(Math.round(p.x) - init.x)
+                           + Math.abs(Math.round(p.y) - init.y)
+                           + Math.abs(Math.round(p.z) - init.z);
+            }
         }
-        return Math.max(0, Math.min(99, Math.round(100 - (totalDist / 60) * 100)));
+        const maxDist = 60 * cubes.length;
+        return Math.max(0, Math.min(99, Math.round(100 - (totalDist / maxDist) * 100)));
     }
 
     const elFill = document.getElementById('progress-fill');
@@ -419,7 +425,7 @@
         elValue.classList.toggle('solved', pct >= 100);
     }
 
-    // --- СОХРАНЕНИЕ ---
+    // ===== СОХРАНЕНИЕ =====
     function saveGameState() {
         try {
             const data = cubes.map(cube => cube.children.filter(c => c.isMesh).map(p => ({
@@ -450,24 +456,33 @@
         } catch (e) {}
     }
 
-    // --- КНОПКИ ---
+    // ===== КНОПКИ =====
     document.getElementById('btn-scramble').addEventListener('click', () => {
         if (drag || animationQueue.length > 0) return;
         const axes = ['x', 'y', 'z'];
-        const layers = [-1, 0, 1];
         for (let i = 0; i < SCRAMBLE_MOVES; i++) {
+            const cubeIdx = (Math.random() * 6) | 0;
             const axis = axes[(Math.random() * 3) | 0];
-            const layer = layers[(Math.random() * 3) | 0];
+            const cube = cubes[cubeIdx];
+
+            const layersSet = new Set();
+            for (const child of cube.children) {
+                if (!child.isMesh) continue;
+                const wp = child.position.clone()
+                    .applyQuaternion(cube.quaternion)
+                    .add(cube.position);
+                layersSet.add(Math.round(wp[axis]));
+            }
+            const layers = [...layersSet];
+            if (layers.length === 0) continue;
+            const layer = layers[(Math.random() * layers.length) | 0];
             const angle = (Math.random() < 0.5 ? 1 : -1) * Math.PI / 2;
-            // Создаем задачу скрамбла
-            const pivots = createPivots(axis, layer, angle);
+
+            const pivots = createPivots(cubeIdx, axis, layer);
             if (pivots.length > 0) {
                 animationQueue.push({
-                    pivots,
-                    startAngle: 0,
-                    targetAngle: angle,
-                    startTime: null,
-                    duration: 100 // Быстро
+                    pivots, startAngle: 0, targetAngle: angle,
+                    startTime: null, duration: 100
                 });
             }
         }
@@ -479,15 +494,13 @@
         location.reload();
     });
 
-    // --- РЕСАЙЗ ---
+    // ===== РЕСАЙЗ =====
     function resize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
         const aspect = w / h;
-        
         const padWidth = 8.0;
         const padHeight = 12.0;
-        
         let fw, fh;
         if (aspect < padWidth / padHeight) {
             fw = padWidth;
@@ -496,14 +509,12 @@
             fh = padHeight;
             fw = padHeight * aspect;
         }
-        
         camera.left = -fw / 2;
         camera.right = fw / 2;
         camera.top = fh / 2;
         camera.bottom = -fh / 2;
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
-
         const pixelsPerUnit = w / fw;
         DRAG_PX_PER_90 = pixelsPerUnit * 2.0;
     }
